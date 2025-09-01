@@ -293,34 +293,51 @@ elif page=='Number Lookup':
 # ---------- PREDICTION ----------
 elif page=='Prediction':
     st.header('Prediction Models')
-    filtered_pred = filter_df(df_game, year_range=year_range, date_range=(date_start, date_end), drawdays=drawday_choice, prize_type=prize_type)
+
+    # Apply global filters including prize_type
+    filtered_pred = filter_df(df_game,
+                              year_range=year_range,
+                              date_range=(date_start, date_end),
+                              drawdays=drawday_choice,
+                              prize_type=prize_type)
     st.markdown(f"Using {len(filtered_pred)} rows after filters for predictions")
+
+    if len(filtered_pred)==0:
+        st.warning("No rows available after applying filters")
+        st.stop()
 
     model_choice = st.selectbox('Choose Prediction Method', [
         'Frequency Analysis','Digit Distribution','Markov Chains','Last Digit Markov','Machine Learning','Hybrid'
     ])
 
-    # prepare all available numbers preserving leading zeros
-    df_numbers = filtered_pred[PRIZE_COLS].fillna('').astype(str).applymap(lambda x: x if x!='nan' else '')
+    # ---------- Collect numbers based on global prize_type ----------
+    if prize_type=='All':
+        df_numbers = filtered_pred[PRIZE_COLS].fillna('').astype(str)
+    else:
+        df_numbers = filtered_pred[[prize_type]].fillna('').astype(str)
+
     all_nums = df_numbers.values.flatten().tolist()
     all_nums = [n for n in all_nums if n and str(n).strip()!='']
     all_nums = [n.zfill(4) if str(n).isdigit() else n for n in all_nums]
 
+    if not all_nums:
+        st.warning('No numbers available for prediction after applying filters')
+        st.stop()
+
+    # ---------- Prediction Methods ----------
     if model_choice=='Frequency Analysis':
         st.write('Predicting based on most frequent numbers')
-        if not all_nums:
-            st.warning('No numbers to analyze with current filters')
-        else:
-            freq_all = pd.Series(all_nums).value_counts().reset_index(); freq_all.columns=['Number','Frequency']
-            freq_all['Probability'] = freq_all['Frequency']/freq_all['Frequency'].sum()
-            top_n = st.slider('Select how many numbers to predict',5,50,10)
-            st.subheader('Predicted Numbers by Frequency'); st.write(freq_all.head(top_n))
+        freq_all = pd.Series(all_nums).value_counts().reset_index()
+        freq_all.columns=['Number','Frequency']
+        freq_all['Probability'] = freq_all['Frequency']/freq_all['Frequency'].sum()
+        top_n = st.slider('Select how many numbers to predict',5,50,10)
+        st.subheader('Predicted Numbers by Frequency'); st.write(freq_all.head(top_n))
 
     elif model_choice=='Digit Distribution':
         st.write('Predicting using digit distribution')
-        valid_numbers = [n for n in all_nums if isinstance(n,str) and n.isdigit() and len(n)==4]
+        valid_numbers = [n for n in all_nums if n.isdigit() and len(n)==4]
         if not valid_numbers:
-            st.warning('No valid 4 digit numbers found')
+            st.warning('No valid 4-digit numbers for digit distribution')
         else:
             digits = np.array([[int(d) for d in num] for num in valid_numbers])
             digit_freq = {}
@@ -331,6 +348,7 @@ elif page=='Prediction':
             for pos, counts in digit_freq.items():
                 st.write(f'Position {pos+1} left to right')
                 st.bar_chart(counts)
+
             top_n = st.slider('How many numbers to generate',5,50,10)
             # generate by sampling top digits combinations
             top_choices = [digit_freq[pos].nlargest(3).index.tolist() for pos in range(4)]
@@ -345,15 +363,16 @@ elif page=='Prediction':
 
     elif model_choice=='Markov Chains':
         st.write('Full-number Markov chain across digits inside number')
-        valid_numbers = [n for n in all_nums if isinstance(n,str) and n.isdigit() and len(n)==4]
+        valid_numbers = [n for n in all_nums if n.isdigit() and len(n)==4]
         if not valid_numbers:
-            st.warning('No valid 4 digit numbers found')
+            st.warning('No valid 4-digit numbers for Markov Chain')
         else:
             init_probs, trans_probs = build_full_chain_markov(valid_numbers)
             st.subheader('Transition heatmap (within-number)')
             fig, ax = plt.subplots(figsize=(6,5)); im=ax.imshow(trans_probs, aspect='auto')
             ax.set_xlabel('Next digit'); ax.set_ylabel('Current digit'); ax.set_xticks(range(10)); ax.set_yticks(range(10))
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04); st.pyplot(fig)
+
             top_n = st.slider('How many numbers to return',5,50,20)
             num_samples = st.slider('Internal sample size',100,5000,1000,step=100)
             seed = st.number_input('Random seed', value=42, step=1)
@@ -374,11 +393,10 @@ elif page=='Prediction':
 
     elif model_choice=='Last Digit Markov':
         st.write('Last-digit Markov across draws')
-        valid_numbers = [n for n in all_nums if isinstance(n,str) and n.isdigit() and len(n)==4]
+        valid_numbers = [n for n in all_nums if n.isdigit() and len(n)==4]
         if not valid_numbers:
-            st.warning('No valid 4 digit numbers found')
+            st.warning('No valid 4-digit numbers for last-digit Markov')
         else:
-            # build transition for last digit across draws
             last_digits = [int(n[-1]) for n in valid_numbers]
             trans = np.zeros((10,10), dtype=float)
             for i in range(len(last_digits)-1):
@@ -396,11 +414,24 @@ elif page=='Prediction':
             top_idxs = probs.argsort()[-top_k:][::-1]
             st.subheader('Next last digit candidates'); st.write(pd.DataFrame({'Digit':top_idxs, 'Probability':probs[top_idxs]}))
 
-    elif model_choice=='Machine Learning':
-        st.write('Machine learning per-position minimal reproducible models (with CV / metrics where possible)')
-        df_train = filtered_pred[filtered_pred['First Prize'].notna()].copy()
-        df_train['First Prize'] = df_train['First Prize'].astype(str).str.zfill(4)
-        seqs = [s for s in df_train['First Prize'].tolist() if isinstance(s,str) and s.isdigit() and len(s)==4]
+    # Machine Learning and Hybrid sections can use the same filtered `all_nums` and prize_type
+    # The existing ML/Hybrid code can stay mostly unchanged, just ensure `all_nums` comes from filtered_pred
+
+
+# ---------- MACHINE LEARNING ----------
+    elif model_choice == 'Machine Learning':
+        st.write('Machine learning per-position models using filtered data')
+        
+        # Select numbers based on global prize_type
+        if prize_type == 'All':
+            df_train = filtered_pred[PRIZE_COLS].copy()
+        else:
+            df_train = filtered_pred[[prize_type]].copy()
+        
+        # Keep only valid 4-digit numbers
+        df_train = df_train.applymap(lambda x: x.zfill(4) if str(x).isdigit() else None)
+        seqs = [x for x in df_train.values.flatten() if isinstance(x, str) and x.isdigit() and len(x) == 4]
+        
         if len(seqs) < 10:
             st.warning('Very small dataset; models may not train well. Prefer >=30 draws for reliability.')
 
@@ -416,10 +447,9 @@ elif page=='Prediction':
             models_info = st.session_state['models_cache'][cache_key]
         else:
             models_info = {'pos_models':{}, 'pos_probs':{}, 'metrics':{}}
-
             for pos in range(4):
                 pos_seq = [int(s[pos]) for s in seqs]
-                X,y = make_seq_features(pos_seq, n_lag)
+                X, y = make_seq_features(pos_seq, n_lag)
                 if len(X) < 5:
                     models_info['pos_models'][pos] = None
                     models_info['pos_probs'][pos] = np.ones(10)/10
@@ -428,7 +458,7 @@ elif page=='Prediction':
 
                 if ml_method in ('RandomForest','XGBoost'):
                     try:
-                        from sklearn.model_selection import train_test_split, cross_val_score
+                        from sklearn.model_selection import train_test_split
                         from sklearn.metrics import accuracy_score
                         Xf = X.reshape(X.shape[0], -1)
                         if ml_method=='RandomForest':
@@ -437,7 +467,6 @@ elif page=='Prediction':
                         else:
                             import xgboost as xgb
                             clf = xgb.XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42)
-
                         X_train, X_test, y_train, y_test = train_test_split(Xf, y, test_size=0.2, random_state=42)
                         clf.fit(X_train, y_train)
                         preds = clf.predict(X_test)
@@ -485,151 +514,134 @@ elif page=='Prediction':
                         models_info['pos_models'][pos] = None
                         models_info['pos_probs'][pos] = np.ones(10)/10
                         models_info['metrics'][pos] = {'error':str(e)}
-
             st.session_state['models_cache'][cache_key] = models_info
             st.success('Trained per-position models (cached in session)')
 
-        # Show top 4 digits per position and generate candidate numbers
+        # Display top digits per position
         models_info = st.session_state['models_cache'][cache_key]
         top_digits_per_pos = []
         for pos in range(4):
             probs = models_info['pos_probs'].get(pos, np.ones(10)/10)
-            top_idxs = probs.argsort()[-4:][::-1]  # top 4 digits
+            top_idxs = probs.argsort()[-4:][::-1]
             top_digits_per_pos.append(top_idxs)
             st.write(f'Position {pos+1} top 4 digits')
             st.write(pd.DataFrame({'Digit':top_idxs, 'Probability':probs[top_idxs]}))
 
-        # Generate candidate numbers from top 4 digits combinations
         import itertools
         candidates = [''.join(map(str, comb)) for comb in itertools.product(*top_digits_per_pos)]
         st.subheader('Candidate numbers from top digits per position'); st.write(candidates[:50])
 
 
-    elif model_choice=='Hybrid':
-        st.write('Hybrid scoring: Frequency + Full-chain Markov + Position Markov + ML per-position (log-prob fusion)')
-        valid_numbers = [n for n in all_nums if isinstance(n,str) and n.isdigit() and len(n)==4]
-        if not valid_numbers:
-            st.warning('No valid 4 digit numbers found for hybrid')
+    # ---------- HYBRID ----------
+    elif model_choice == 'Hybrid':
+        st.write('Hybrid scoring: Frequency + Full-chain Markov + Position Markov + ML per-position using filtered data')
+        
+        # Use filtered_pred and prize_type to collect valid numbers
+        if prize_type == 'All':
+            nums = filtered_pred[PRIZE_COLS].fillna('').astype(str).values.flatten().tolist()
         else:
-            # Frequency
-            freq = pd.Series(valid_numbers).value_counts()
-            total = freq.sum()
+            nums = filtered_pred[[prize_type]].fillna('').astype(str).values.flatten().tolist()
+        valid_numbers = [n.zfill(4) for n in nums if n and str(n).isdigit() and len(str(n))==4]
 
-            # full-chain markov
-            init_probs, trans_probs = build_full_chain_markov(valid_numbers)
+        if not valid_numbers:
+            st.warning('No valid 4-digit numbers after applying filters')
+            st.stop()
 
-            # position-wise markov and last observed per position
-            pos_trans, last_digits_pos = build_position_markov(valid_numbers)
+        # Frequency
+        freq = pd.Series(valid_numbers).value_counts()
+        total = freq.sum()
 
-            # ML per-position: try to load cached models from earlier ML panel if same filters/hyperparams
-            ml_method = st.selectbox('ML method for hybrid per-position', ['RandomForest','XGBoost','LSTM'])
-            n_lag = st.slider('Lag for ML per-position', 1, 12, 5, key='hybrid_nlag')
-            lstm_epochs_h = st.slider('LSTM epochs (hybrid quick)', 1, 20, 3, key='hybrid_lstm_epochs')
-            lstm_batch_h = st.slider('LSTM batch size (hybrid)', 8, 64, 16, key='hybrid_lstm_batch')
+        # Full-chain Markov
+        init_probs, trans_probs = build_full_chain_markov(valid_numbers)
 
-            cache_key = ('hybrid', game_choice, str(date_start), str(date_end), tuple(sorted(drawday_choice)), prize_type, ml_method, n_lag, lstm_epochs_h, lstm_batch_h)
-            if cache_key in st.session_state['models_cache']:
-                models_info = st.session_state['models_cache'][cache_key]
-            else:
-                # quick training for hybrid; store pos_probs
-                models_info = {'pos_probs':{}}
-                df_train = filtered_pred[filtered_pred['First Prize'].notna()].copy()
-                df_train['First Prize'] = df_train['First Prize'].astype(str).str.zfill(4)
-                seqs_train = [s for s in df_train['First Prize'].tolist() if isinstance(s,str) and s.isdigit() and len(s)==4]
-                for pos in range(4):
-                    pos_seq = [int(s[pos]) for s in seqs_train]
-                    X,y = make_seq_features(pos_seq, n_lag)
-                    if len(X) < 5:
-                        models_info['pos_probs'][pos] = np.ones(10)/10
-                        continue
-                    if ml_method in ('RandomForest','XGBoost'):
-                        try:
-                            Xf = X.reshape(X.shape[0], -1)
-                            if ml_method=='RandomForest':
-                                from sklearn.ensemble import RandomForestClassifier
-                                clf = RandomForestClassifier(n_estimators=80, random_state=42)
-                                clf.fit(Xf, y)
-                            else:
-                                import xgboost as xgb
-                                clf = xgb.XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42)
-                                clf.fit(Xf, y)
-                            last_window = np.array(pos_seq[-n_lag:]).reshape(1,-1)
-                            proba = clf.predict_proba(last_window)[0]
-                            arr = np.zeros(10)
-                            for cls_idx, p in zip(clf.classes_, proba):
-                                arr[int(cls_idx)] = p
-                            models_info['pos_probs'][pos] = arr
-                        except Exception:
-                            models_info['pos_probs'][pos] = np.ones(10)/10
-                    else:
-                        try:
-                            import tensorflow as tf
-                            from tensorflow import keras
-                            Xs = X.astype(float)/9.0; Xs = Xs.reshape((Xs.shape[0], Xs.shape[1],1))
-                            split = int(0.8 * len(Xs))
-                            model = keras.Sequential([keras.layers.Input(shape=(n_lag,1)), keras.layers.LSTM(32), keras.layers.Dense(10, activation='softmax')])
-                            model.compile(optimizer='adam', loss='sparse_categorical_crossentropy')
-                            es = keras.callbacks.EarlyStopping(monitor='loss', patience=2, restore_best_weights=True)
-                            model.fit(Xs[:split], y[:split], epochs=lstm_epochs_h, batch_size=lstm_batch_h, verbose=0, callbacks=[es])
-                            last_window = np.array(pos_seq[-n_lag:]).astype(float)/9.0; last_window=last_window.reshape(1,n_lag,1)
-                            probs = model.predict(last_window, verbose=0)[0]
-                            models_info['pos_probs'][pos] = probs
-                        except Exception:
-                            models_info['pos_probs'][pos] = np.ones(10)/10
-                st.session_state['models_cache'][cache_key] = models_info
+        # Position Markov
+        pos_trans, last_digits_pos = build_position_markov(valid_numbers)
 
-            # compute hybrid log score for candidates. We'll score top frequency numbers as candidate pool
-            candidate_pool = list(freq.head(500).index) if len(freq) > 0 else valid_numbers
-
-            # weights (use sliders)
-            w_freq = st.slider('Weight Frequency', 0.0,1.0,0.25)
-            w_full = st.slider('Weight Full-chain Markov', 0.0,1.0,0.25)
-            w_pos = st.slider('Weight Position Markov', 0.0,1.0,0.25)
-            w_ml = st.slider('Weight ML per-position', 0.0,1.0,0.25)
-            wsum = w_freq + w_full + w_pos + w_ml
-            if wsum==0:
-                st.warning('At least one weight must be >0')
-            else:
-                rows=[]
-                pos_probs_cache = st.session_state['models_cache'][cache_key]['pos_probs']
-                for num in candidate_pool:
-                    # freq prob
-                    p_freq = (freq.get(num,0)/total) if total>0 else 1e-12
-                    # full-chain prob
-                    digits = [int(d) for d in num]
-                    p_full = init_probs[digits[0]] * trans_probs[digits[0],digits[1]] * trans_probs[digits[1],digits[2]] * trans_probs[digits[2],digits[3]]
-                    # position markov using last observed per pos
-                    p_pos = 1.0
-                    for pos in range(4):
-                        last = last_digits_pos[pos]
-                        if last is None:
-                            p_pos *= 1.0/10.0
+        # ML per-position (quick training)
+        ml_method = st.selectbox('ML method for hybrid', ['RandomForest','XGBoost','LSTM'])
+        n_lag = st.slider('Lag for ML per-position', 1, 12, 5, key='hybrid_nlag')
+        lstm_epochs_h = st.slider('LSTM epochs (hybrid)', 1, 20, 3, key='hybrid_lstm_epochs')
+        lstm_batch_h = st.slider('LSTM batch size (hybrid)', 8, 64, 16, key='hybrid_lstm_batch')
+        
+        cache_key = ('hybrid', game_choice, str(date_start), str(date_end), tuple(sorted(drawday_choice)), prize_type, ml_method, n_lag, lstm_epochs_h, lstm_batch_h)
+        if cache_key in st.session_state['models_cache']:
+            models_info = st.session_state['models_cache'][cache_key]
+        else:
+            models_info = {'pos_probs':{}}
+            seqs_train = [s for s in valid_numbers if s.isdigit() and len(s)==4]
+            for pos in range(4):
+                pos_seq = [int(s[pos]) for s in seqs_train]
+                X, y = make_seq_features(pos_seq, n_lag)
+                if len(X) < 5:
+                    models_info['pos_probs'][pos] = np.ones(10)/10
+                    continue
+                if ml_method in ('RandomForest','XGBoost'):
+                    try:
+                        Xf = X.reshape(X.shape[0], -1)
+                        if ml_method=='RandomForest':
+                            from sklearn.ensemble import RandomForestClassifier
+                            clf = RandomForestClassifier(n_estimators=80, random_state=42)
+                            clf.fit(Xf, y)
                         else:
-                            # fallback uniform if transition row sums zero
-                            row = pos_trans[pos]
-                            denom = row[last].sum()
-                            if denom <= 0:
-                                p_pos *= 1.0/10.0
-                            else:
-                                p_pos *= (row[last, digits[pos]] / denom)
-                    # ml per-position
-                    p_ml = 1.0
-                    for pos in range(4):
-                        posp = pos_probs_cache.get(pos, np.ones(10)/10)
-                        p_ml *= float(posp[digits[pos]]) if posp is not None else 1.0/10.0
+                            import xgboost as xgb
+                            clf = xgb.XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42)
+                            clf.fit(Xf, y)
+                        last_window = np.array(pos_seq[-n_lag:]).reshape(1,-1)
+                        proba = clf.predict_proba(last_window)[0]
+                        arr = np.zeros(10)
+                        for cls_idx, p in zip(clf.classes_, proba):
+                            arr[int(cls_idx)] = p
+                        models_info['pos_probs'][pos] = arr
+                    except Exception:
+                        models_info['pos_probs'][pos] = np.ones(10)/10
+                else:
+                    try:
+                        import tensorflow as tf
+                        from tensorflow import keras
+                        Xs = X.astype(float)/9.0; Xs = Xs.reshape((Xs.shape[0], Xs.shape[1],1))
+                        split = int(0.8*len(Xs))
+                        model = keras.Sequential([keras.layers.Input(shape=(n_lag,1)), keras.layers.LSTM(32), keras.layers.Dense(10, activation='softmax')])
+                        model.compile(optimizer='adam', loss='sparse_categorical_crossentropy')
+                        es = keras.callbacks.EarlyStopping(monitor='loss', patience=2, restore_best_weights=True)
+                        model.fit(Xs[:split], y[:split], epochs=lstm_epochs_h, batch_size=lstm_batch_h, verbose=0, callbacks=[es])
+                        last_window = np.array(pos_seq[-n_lag:]).astype(float)/9.0; last_window = last_window.reshape(1,n_lag,1)
+                        probs = model.predict(last_window, verbose=0)[0]
+                        models_info['pos_probs'][pos] = probs
+                    except Exception:
+                        models_info['pos_probs'][pos] = np.ones(10)/10
+            st.session_state['models_cache'][cache_key] = models_info
 
-                    # convert to log and weighted sum
-                    log_score = (
-                        (w_freq/wsum) * safe_log(max(p_freq,1e-12)) +
-                        (w_full/wsum) * safe_log(max(p_full,1e-12)) +
-                        (w_pos/wsum) * safe_log(max(p_pos,1e-12)) +
-                        (w_ml/wsum) * safe_log(max(p_ml,1e-12))
-                    )
-                    score = float(np.exp(log_score))
-                    rows.append({'Number':num, 'P_freq':p_freq, 'P_full':p_full, 'P_pos':p_pos, 'P_ml':p_ml, 'HybridScore':score})
-                out = pd.DataFrame(rows).sort_values('HybridScore', ascending=False).head(50)
-                st.subheader('Hybrid ranking (top candidates)')
-                st.write(out)
+        # Compute hybrid scores
+        candidate_pool = list(freq.head(500).index) if len(freq)>0 else valid_numbers
+        w_freq = st.slider('Weight Frequency', 0.0,1.0,0.25)
+        w_full = st.slider('Weight Full-chain Markov', 0.0,1.0,0.25)
+        w_pos = st.slider('Weight Position Markov', 0.0,1.0,0.25)
+        w_ml = st.slider('Weight ML per-position', 0.0,1.0,0.25)
+        wsum = w_freq + w_full + w_pos + w_ml
+        if wsum==0:
+            st.warning('At least one weight must be >0')
+        else:
+            rows=[]
+            pos_probs_cache = st.session_state['models_cache'][cache_key]['pos_probs']
+            for num in candidate_pool:
+                digits = [int(d) for d in num]
+                p_freq = (freq.get(num,0)/total) if total>0 else 1e-12
+                p_full = init_probs[digits[0]] * trans_probs[digits[0],digits[1]] * trans_probs[digits[1],digits[2]] * trans_probs[digits[2],digits[3]]
+                p_pos = 1.0
+                for pos in range(4):
+                    last = last_digits_pos[pos]
+                    row = pos_trans[pos]
+                    denom = row[last].sum() if last is not None else 0
+                    p_pos *= (row[last,digits[pos]]/denom if denom>0 else 1/10)
+                p_ml = 1.0
+                for pos in range(4):
+                    posp = pos_probs_cache.get(pos, np.ones(10)/10)
+                    p_ml *= float(posp[digits[pos]]) if posp is not None else 1/10
+                log_score = (w_freq/wsum)*safe_log(max(p_freq,1e-12)) + (w_full/wsum)*safe_log(max(p_full,1e-12)) + (w_pos/wsum)*safe_log(max(p_pos,1e-12)) + (w_ml/wsum)*safe_log(max(p_ml,1e-12))
+                rows.append({'Number':num, 'P_freq':p_freq, 'P_full':p_full, 'P_pos':p_pos, 'P_ml':p_ml, 'HybridScore':float(np.exp(log_score))})
+            out = pd.DataFrame(rows).sort_values('HybridScore', ascending=False).head(50)
+            st.subheader('Hybrid ranking (top candidates)')
+            st.write(out)
 
     st.markdown('---')
     st.subheader('Export data used for prediction')
