@@ -167,7 +167,7 @@ date_start, date_end = st.sidebar.date_input("Date range", value=(min_date, max_
 raw_drawdays = [d for d in df_game['DrawDay'].unique() if d and str(d).strip()!='']
 drawday_choice = st.sidebar.multiselect("Draw Day", sorted(raw_drawdays), default=sorted(raw_drawdays))
 prize_options = ['All'] + list(PRIZE_COLS)
-prize_type = st.sidebar.selectbox('Prize Type', prize_options, index=0)
+prize_type = st.sidebar.multiselect('Prize Type', sorted(prize_options), default=sorted(prize_options))
 
 # ---------- PAGE NAV ----------
 page = st.sidebar.radio("Select Page", ["Analytics","Number Lookup","Prediction"])
