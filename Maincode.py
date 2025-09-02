@@ -5,11 +5,11 @@ import numpy as np
 import io
 from datetime import date
 
----------- CONFIG ----------------
+#---------- CONFIG ----------------
 
 st.set_page_config(layout="wide")
 
----------- DATA LOADING ----------
+#---------- DATA LOADING ----------
 
 columns = [
 "Year", "Month", "Day",
@@ -69,7 +69,7 @@ return data
 
 data = load_data()
 
----------- UTIL ----------
+#---------- UTIL ----------
 
 def df_to_csv_bytes(df):
 buf = io.StringIO()
@@ -82,7 +82,7 @@ mx = df["draw_date"].max()
 return mx.date().isoformat() if not pd.isna(mx) else "No valid date"
 return "No draw date"
 
----------- MODELING HELPERS ----------
+#---------- MODELING HELPERS ----------
 
 def make_seq_features(seq_list, n_lag):
 X, y = [], []
@@ -138,7 +138,7 @@ Session caching for trained models to avoid retrain on small UI changes
 if 'models_cache' not in st.session_state:
 st.session_state['models_cache'] = {}
 
----------- SIDEBAR FILTERS ----------
+#---------- SIDEBAR FILTERS ----------
 
 st.sidebar.title("Global Filters")
 
@@ -178,11 +178,11 @@ drawday_choice = st.sidebar.multiselect("Draw Day", sorted(raw_drawdays), defaul
 prize_options = ['All'] + list(PRIZE_COLS)
 prize_type = st.sidebar.selectbox('Prize Type', prize_options, index=0)
 
----------- PAGE NAV ----------
+#---------- PAGE NAV ----------
 
 page = st.sidebar.radio("Select Page", ["Analytics","Number Lookup","Prediction"])
 
----------- FILTER FUNCTION ----------
+##---------- FILTER FUNCTION ----------
 
 def filter_df(df, year_range=None, date_range=None, drawdays=None, prize_type='All'):
 out = df.copy()
@@ -216,7 +216,7 @@ if prize_type and prize_type != 'All':
 
 return out
 
----------- ANALYTICS ----------
+#---------- ANALYTICS ----------
 
 if page=='Analytics':
 st.header('Analytical Dashboard')
@@ -256,7 +256,7 @@ st.subheader('Export filtered data')
 csv_bytes = df_to_csv_bytes(filtered)  
 st.download_button('Download filtered rows as CSV', data=csv_bytes, file_name=f"{game_choice}_filtered.csv", mime='text/csv')
 
----------- NUMBER LOOKUP ----------
+#---------- NUMBER LOOKUP ----------
 
 elif page=='Number Lookup':
 st.header('Number Lookup')
@@ -301,7 +301,7 @@ else:
         csv_bytes_hits = df_to_csv_bytes(hits_df)  
         st.download_button('Download occurrences CSV', data=csv_bytes_hits, file_name=f"{lookup_game}_{lookup_num}_hits.csv", mime='text/csv')
 
----------- PREDICTION ----------
+#---------- PREDICTION ----------
 
 elif page=='Prediction':
 st.header('Prediction Models')
@@ -429,7 +429,7 @@ elif model_choice=='Last Digit Markov':
 # Machine Learning and Hybrid sections can use the same filtered `all_nums` and prize_type  
 # The existing ML/Hybrid code can stay mostly unchanged, just ensure `all_nums` comes from filtered_pred
 
----------- MACHINE LEARNING ----------
+#---------- MACHINE LEARNING ----------
 
 elif model_choice == 'Machine Learning':  
     st.write('Machine learning per-position models using filtered data')  
