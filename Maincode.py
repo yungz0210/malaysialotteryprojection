@@ -5,7 +5,7 @@ import numpy as np
 import io
 from datetime import date
 
----------- CONFIG ----------
+---------- CONFIG ----------------
 
 st.set_page_config(layout="wide")
 
