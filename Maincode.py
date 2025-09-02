@@ -659,4 +659,3 @@ st.markdown('---')
 st.subheader('Export data used for prediction')  
 csv_bytes = df_to_csv_bytes(filtered_pred)  
 st.download_button('Download prediction dataset as CSV', data=csv_bytes, file_name=f"{game_choice}_prediction_dataset.csv", mime='text/csv')
-
