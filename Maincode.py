@@ -32,7 +32,6 @@ PRIZE_COLS = columns[3:-1]
 def load_data():
     data = {}
     for name, url in urls.items():
-        # Same schema for all three in your source links
         game_columns = [
             "Year", "Month", "Day", "First Prize", "Second Prize", "Third Prize",
             "Starter Prize 1", "Starter Prize 2", "Starter Prize 3", "Starter Prize 4", "Starter Prize 5",
@@ -46,9 +45,10 @@ def load_data():
         except Exception:
             df = pd.read_csv(url, names=game_columns, dtype=str, keep_default_na=False, encoding="latin1", on_bad_lines="skip")
 
+        # strip strings
         df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
 
-        # Normalize date parts
+        # normalize date parts
         for col in ["Year", "Month", "Day"]:
             if col in df.columns:
                 df[col] = df[col].str.strip().replace("", np.nan)
@@ -61,7 +61,7 @@ def load_data():
 
         df["draw_date"] = df.apply(safe_date, axis=1)
 
-        # Normalize prize columns to keep leading zeros
+        # Normalize prize columns (keep leading zeros)
         PRIZE_COLS_GAME = [c for c in game_columns if c not in ["Year", "Month", "Day", "DrawDay"]]
         for c in PRIZE_COLS_GAME:
             if c in df.columns:
@@ -107,7 +107,7 @@ def build_position_markov(sequences):
             last_digits[pos] = d
     pos_probs = {}
     for pos in range(4):
-        mat = pos_trans[pos]
+        mat = pos_trans[pos].copy()
         mat += 1e-6  # smoothing
         row_sums = mat.sum(axis=1, keepdims=True)
         row_sums[row_sums == 0] = 1.0
@@ -172,7 +172,7 @@ else:
     max_date = max_date.date()
 date_start, date_end = st.sidebar.date_input("Date range", value=(min_date, max_date))
 
-# Draw day and prize type (MULTISELECT — used everywhere below)
+# Draw day and prize types (MULTISELECT — used everywhere below)
 raw_drawdays = [d for d in df_game["DrawDay"].unique() if d and str(d).strip() != ""]
 drawday_choice = st.sidebar.multiselect("Draw Day", sorted(raw_drawdays), default=sorted(raw_drawdays))
 
@@ -212,7 +212,7 @@ def filter_df(df, year_range=None, date_range=None, drawdays=None, prize_types=N
 
     # Prize type filter: keep rows where at least one selected prize is nonempty
     if prize_types and len(prize_types) > 0:
-        mask = False
+        mask = pd.Series(False, index=out.index)
         for pt in prize_types:
             if pt in out.columns:
                 mask = mask | (out[pt].notna() & (out[pt].str.strip() != ""))
@@ -224,9 +224,14 @@ def filter_df(df, year_range=None, date_range=None, drawdays=None, prize_types=N
 def collect_numbers(df_src, selected_prize_types):
     if not selected_prize_types:
         return []
-    df_numbers = df_src[selected_prize_types].fillna("").astype(str)
+    # Only keep columns that exist
+    cols = [c for c in selected_prize_types if c in df_src.columns]
+    if len(cols) == 0:
+        return []
+    df_numbers = df_src[cols].fillna("").astype(str)
     nums = df_numbers.values.flatten().tolist()
     nums = [x for x in nums if x and x.strip() != ""]
+    # Keep leading zeros for numeric entries
     nums = [x.zfill(4) if x.isdigit() else x for x in nums]
     return nums
 
@@ -248,7 +253,7 @@ if page == "Analytics":
     st.markdown("### Filter summary")
     st.write(
         f"Game **{game_choice}** | Years **{year_range[0]}–{year_range[1]}** | "
-        f"Dates **{date_start} → {date_end}** | Draw Days **{', '.join(drawday_choice) if drawday_choice else 'All'}** | "
+        f"Dates **{date_start} → {date_end}** | Draw Days **{', '.join(map(str, drawday_choice)) if drawday_choice else 'All'}** | "
         f"Prizes **{', '.join(prize_types) if prize_types else '(none)'}**"
     )
 
@@ -430,9 +435,9 @@ elif page == "Prediction":
             st.markdown("**Generation controls**")
             top_per_pos = st.slider("How many top digits per position to combine", 2, 10, 3)
             top_n = st.slider("How many candidate numbers to output", 5, 100, 20)
-            dedup_existing = st.checkbox("Remove numbers already seen in filtered data", value=True)
+            dedup_existing = st.checkbox("Remove numbers already seen in filtered data", value=False)
 
-            # Build candidate grid from top-K per position, score by product of normalized frequencies
+            # Build candidate grid from top-K per position, score by product of frequencies
             top_choices = [digit_freq[pos].nlargest(top_per_pos) for pos in range(4)]
             top_indices = [s.index.tolist() for s in top_choices]
             top_weights = [s.values for s in top_choices]
@@ -444,7 +449,7 @@ elif page == "Prediction":
                     for c_idx, c_w in zip(top_indices[2], top_weights[2]):
                         for d_idx, d_w in zip(top_indices[3], top_weights[3]):
                             num = f"{a_idx}{b_idx}{c_idx}{d_idx}"
-                            score = (a_w + 1e-6) * (b_w + 1e-6) * (c_w + 1e-6) * (d_w + 1e-6)
+                            score = (a_w + 1e-9) * (b_w + 1e-9) * (c_w + 1e-9) * (d_w + 1e-9)
                             candidates.append(num)
                             scores.append(score)
 
@@ -502,11 +507,7 @@ elif page == "Prediction":
                     scores[s] = lp
 
             ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-            if ensure_unique:
-                out_numbers = [n for (n, _) in ranked]
-            else:
-                out_numbers = [n for (n, _) in ranked for _ in [1]]
-
+            out_numbers = [n for (n, _) in ranked]
             out_numbers = out_numbers[:top_n]
             out = pd.DataFrame({
                 "Number": out_numbers,
@@ -555,7 +556,8 @@ elif page == "Prediction":
     elif model_choice == "Machine Learning":
         st.write("Machine learning per-position models using filtered data (selected prize types)")
 
-        df_train = filtered_pred[prize_types].copy()
+        # Prepare training sequences from filtered_pred
+        df_train = filtered_pred[[c for c in prize_types if c in filtered_pred.columns]].copy()
         # Keep only valid 4-digit numbers
         df_train = df_train.applymap(lambda x: x.zfill(4) if str(x).isdigit() else None)
         seqs = [x for x in df_train.values.flatten() if isinstance(x, str) and x.isdigit() and len(x) == 4]
@@ -724,13 +726,9 @@ elif page == "Prediction":
                         Xs = X.astype(float) / 9.0
                         Xs = Xs.reshape((Xs.shape[0], Xs.shape[1], 1))
                         split = int(0.8 * len(Xs))
-                        model = keras.Sequential([
-                            keras.layers.Input(shape=(n_lag, 1)),
-                            keras.layers.LSTM(32),
-                            keras.layers.Dense(10, activation="softmax")
-                        ])
+                        model = keras.Sequential([keras.layers.Input(shape=(n_lag,1)), keras.layers.LSTM(32), keras.layers.Dense(10, activation='softmax')])
                         model.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
-                        es = keras.callbacks.EarlyStopping(monitor="loss", patience=2, restore_best_weights=True)
+                        es = keras.callbacks.EarlyStopping(monitor='loss', patience=2, restore_best_weights=True)
                         model.fit(Xs[:split], y[:split], epochs=lstm_epochs_h, batch_size=lstm_batch_h, verbose=0, callbacks=[es])
                         last_window = np.array(pos_seq[-n_lag:]).astype(float) / 9.0
                         last_window = last_window.reshape(1, n_lag, 1)
@@ -768,19 +766,24 @@ elif page == "Prediction":
                 # Position Markov component
                 p_pos_comp = 1.0
                 for pos in range(4):
-                    last = None  # Default if we didn't see a last digit for that pos
-                    if last_digits_pos[pos] is not None:
-                        last = last_digits_pos[pos]
-                    row = pos_trans[pos]
-                    denom = row[last].sum() if (last is not None) else 0
-                    p_pos_comp *= (row[last, digits[pos]] / denom if denom > 0 else 1 / 10)
+                    last = last_digits_pos.get(pos, None) if 'last_digits_pos' in locals() else None
+                    if last is None:
+                        # fallback uniform
+                        p_pos_comp *= 1.0 / 10.0
+                    else:
+                        row = pos_trans[pos]
+                        # if last not observed (possible), use uniform
+                        try:
+                            denom = row[last].sum()
+                            p_pos_comp *= (row[last, digits[pos]] / denom) if denom > 0 else 1.0 / 10.0
+                        except Exception:
+                            p_pos_comp *= 1.0 / 10.0
 
                 # ML per-position component
                 p_ml = 1.0
                 for pos in range(4):
                     posp = pos_probs_cache.get(pos, np.ones(10) / 10)
-                    p_ml += 0.0  # just to make it explicit
-                    p_ml *= float(posp[digits[pos]]) if posp is not None else 1 / 10
+                    p_ml *= float(posp[digits[pos]]) if posp is not None else 1.0 / 10.0
 
                 log_score = (
                     (w_freq / wsum) * safe_log(max(p_freq, 1e-12)) +
