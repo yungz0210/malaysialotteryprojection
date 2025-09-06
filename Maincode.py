@@ -834,3 +834,4 @@ try:
 except Exception as e:
     st.error("App crashed with error:")
     st.code(traceback.format_exc())
+    st.exception(e)
