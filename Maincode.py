@@ -556,110 +556,123 @@ elif page == "Prediction":
     elif model_choice == "Machine Learning":
         st.write("Machine learning per-position models using filtered data (selected prize types)")
 
-        # Prepare training sequences from filtered_pred
-        df_train = filtered_pred[[c for c in prize_types if c in filtered_pred.columns]].copy()
-        # Keep only valid 4-digit numbers
-        df_train = df_train.applymap(lambda x: x.zfill(4) if str(x).isdigit() else None)
-        seqs = [x for x in df_train.values.flatten() if isinstance(x, str) and x.isdigit() and len(x) == 4]
+        # Collect numbers properly
+        seqs = [n for n in collect_numbers(filtered_pred, prize_types) if n.isdigit() and len(n) == 4]
+        st.markdown(f"Training with **{len(seqs)}** numbers from selected prize types")
 
-        if len(seqs) < 10:
-            st.warning("Very small dataset; models may not train well. Prefer ≥ 30 draws for reliability.")
+        if len(seqs) < 20:
+            st.warning("Very small dataset; models may not train well. Prefer ≥ 50 numbers for reliability.")
 
         ml_method = st.selectbox("ML method", ["RandomForest", "XGBoost", "LSTM"])
         n_lag = st.slider("Lag (previous draws) for per-position models", 1, 12, 5)
         lstm_epochs = st.slider("LSTM epochs", 1, 50, 8)
         lstm_batch = st.slider("LSTM batch size", 8, 128, 32)
 
-        cache_key = (game_choice, str(date_start), str(date_end), tuple(sorted(drawday_choice)), tuple(sorted(prize_types)), ml_method, n_lag, lstm_epochs, lstm_batch)
+        models_info = {"pos_models": {}, "pos_probs": {}, "metrics": {}}
 
-        if cache_key in st.session_state["models_cache"]:
-            st.info("Using cached models for these filters & hyperparams")
-            models_info = st.session_state["models_cache"][cache_key]
-        else:
-            models_info = {"pos_models": {}, "pos_probs": {}, "metrics": {}}
-            for pos in range(4):
-                pos_seq = [int(s[pos]) for s in seqs]
-                X, y = make_seq_features(pos_seq, n_lag)
-                if len(X) < 5:
+        for pos in range(4):
+            pos_seq = [int(s[pos]) for s in seqs]
+            X, y = make_seq_features(pos_seq, n_lag)
+
+            if len(X) < 5:
+                models_info["pos_models"][pos] = None
+                models_info["pos_probs"][pos] = np.ones(10) / 10
+                models_info["metrics"][pos] = {"note": "insufficient data"}
+                continue
+
+            if ml_method in ("RandomForest", "XGBoost"):
+                try:
+                    from sklearn.model_selection import train_test_split
+                    from sklearn.metrics import accuracy_score
+                    Xf = X.reshape(X.shape[0], -1)
+
+                    if ml_method == "RandomForest":
+                        from sklearn.ensemble import RandomForestClassifier
+                        clf = RandomForestClassifier(n_estimators=120, random_state=42)
+                    else:
+                        import xgboost as xgb
+                        clf = xgb.XGBClassifier(
+                            use_label_encoder=False, 
+                            eval_metric="mlogloss", 
+                            random_state=42
+                        )
+
+                    X_train, X_test, y_train, y_test = train_test_split(Xf, y, test_size=0.2, random_state=42)
+                    clf.fit(X_train, y_train)
+
+                    preds = clf.predict(X_test)
+                    test_acc = float(accuracy_score(y_test, preds))
+
+                    last_window = np.array(pos_seq[-n_lag:]).reshape(1, -1)
+                    proba = clf.predict_proba(last_window)[0]
+                    arr = np.zeros(10)
+                    for cls_idx, p in zip(clf.classes_, proba):
+                        arr[int(cls_idx)] = p
+
+                    models_info["pos_models"][pos] = clf
+                    models_info["pos_probs"][pos] = arr
+                    models_info["metrics"][pos] = {"test_acc": test_acc}
+
+                except Exception as e:
                     models_info["pos_models"][pos] = None
                     models_info["pos_probs"][pos] = np.ones(10) / 10
-                    models_info["metrics"][pos] = {"note": "insufficient data"}
-                    continue
+                    models_info["metrics"][pos] = {"error": str(e)}
 
-                if ml_method in ("RandomForest", "XGBoost"):
-                    try:
-                        from sklearn.model_selection import train_test_split
-                        from sklearn.metrics import accuracy_score
-                        Xf = X.reshape(X.shape[0], -1)
-                        if ml_method == "RandomForest":
-                            from sklearn.ensemble import RandomForestClassifier
-                            clf = RandomForestClassifier(n_estimators=120, random_state=42)
-                        else:
-                            import xgboost as xgb
-                            clf = xgb.XGBClassifier(use_label_encoder=False, eval_metric="mlogloss", random_state=42)
-                        X_train, X_test, y_train, y_test = train_test_split(Xf, y, test_size=0.2, random_state=42)
-                        clf.fit(X_train, y_train)
-                        preds = clf.predict(X_test)
-                        test_acc = float(accuracy_score(y_test, preds))
-                        last_window = np.array(pos_seq[-n_lag:]).reshape(1, -1)
-                        proba = clf.predict_proba(last_window)[0]
-                        arr = np.zeros(10)
-                        for cls_idx, p in zip(clf.classes_, proba):
-                            arr[int(cls_idx)] = p
-                        models_info["pos_models"][pos] = clf
-                        models_info["pos_probs"][pos] = arr
-                        models_info["metrics"][pos] = {"test_acc": test_acc}
-                    except Exception as e:
-                        models_info["pos_models"][pos] = None
-                        models_info["pos_probs"][pos] = np.ones(10) / 10
-                        models_info["metrics"][pos] = {"error": str(e)}
-                else:
-                    # LSTM
-                    try:
-                        import tensorflow as tf
-                        from tensorflow import keras
-                        Xs = X.astype(float) / 9.0
-                        Xs = Xs.reshape((Xs.shape[0], Xs.shape[1], 1))
-                        split = int(0.8 * len(Xs))
-                        X_tr, X_val = Xs[:split], Xs[split:]
-                        y_tr, y_val = y[:split], y[split:]
-                        model = keras.Sequential([
-                            keras.layers.Input(shape=(n_lag, 1)),
-                            keras.layers.LSTM(64, return_sequences=False),
-                            keras.layers.Dropout(0.2),
-                            keras.layers.Dense(32, activation="relu"),
-                            keras.layers.Dense(10, activation="softmax")
-                        ])
-                        model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
-                        es = keras.callbacks.EarlyStopping(monitor="val_loss", patience=3, restore_best_weights=True)
-                        history = model.fit(X_tr, y_tr, validation_data=(X_val, y_val), epochs=lstm_epochs, batch_size=lstm_batch, verbose=0, callbacks=[es])
-                        val_loss, val_acc = model.evaluate(X_val, y_val, verbose=0)
-                        last_window = np.array(pos_seq[-n_lag:]).astype(float) / 9.0
-                        last_window = last_window.reshape(1, n_lag, 1)
-                        probs = model.predict(last_window, verbose=0)[0]
-                        models_info["pos_models"][pos] = model
-                        models_info["pos_probs"][pos] = probs
-                        models_info["metrics"][pos] = {"val_acc": float(val_acc), "epochs_trained": len(history.history["loss"])}
-                    except Exception as e:
-                        models_info["pos_models"][pos] = None
-                        models_info["pos_probs"][pos] = np.ones(10) / 10
-                        models_info["metrics"][pos] = {"error": str(e)}
-            st.session_state["models_cache"][cache_key] = models_info
-            st.success("Trained per-position models (cached in session)")
+            else:
+                # LSTM
+                try:
+                    import tensorflow as tf
+                    from tensorflow import keras
 
-        # Display top digits per position
-        models_info = st.session_state["models_cache"][cache_key]
-        top_digits_per_pos = []
-        for pos in range(4):
-            probs = models_info["pos_probs"].get(pos, np.ones(10) / 10)
-            top_idxs = probs.argsort()[-4:][::-1]
-            top_digits_per_pos.append(top_idxs)
-            st.write(f"Position {pos+1} top 4 digits")
-            st.write(pd.DataFrame({"Digit": top_idxs, "Probability": probs[top_idxs]}))
+                    Xs = X.astype(float)
+                    ys = y.astype(int)
 
-        candidates = ["".join(map(str, comb)) for comb in itertools.product(*top_digits_per_pos)]
-        st.subheader("Candidate numbers from top digits per position")
-        st.write(candidates[:50])
+                    Xs = Xs.reshape((Xs.shape[0], Xs.shape[1], 1))
+
+                    model = keras.Sequential([
+                        keras.layers.Input(shape=(n_lag, 1)),
+                        keras.layers.LSTM(32),
+                        keras.layers.Dense(10, activation="softmax")
+                    ])
+
+                    model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
+                    history = model.fit(Xs, ys, epochs=lstm_epochs, batch_size=lstm_batch, verbose=0, validation_split=0.2)
+
+                    last_window = np.array(pos_seq[-n_lag:]).reshape(1, n_lag, 1)
+                    proba = model.predict(last_window, verbose=0)[0]
+
+                    models_info["pos_models"][pos] = model
+                    models_info["pos_probs"][pos] = proba
+                    models_info["metrics"][pos] = {"final_val_acc": history.history["val_accuracy"][-1]}
+
+                except Exception as e:
+                    models_info["pos_models"][pos] = None
+                    models_info["pos_probs"][pos] = np.ones(10) / 10
+                    models_info["metrics"][pos] = {"error": str(e)}
+
+        # Combine per-position predictions
+        top_n = st.slider("How many predicted numbers to show", 5, 50, 10)
+
+        # Build candidate grid
+        probs = models_info["pos_probs"]
+        candidates = []
+        scores = []
+        for a in range(10):
+            for b in range(10):
+                for c in range(10):
+                    for d in range(10):
+                        num = f"{a}{b}{c}{d}"
+                        score = probs[0][a] * probs[1][b] * probs[2][c] * probs[3][d]
+                        candidates.append(num)
+                        scores.append(score)
+
+        cand_df = pd.DataFrame({"Number": candidates, "Score": scores}).sort_values("Score", ascending=False)
+        st.subheader("Predicted Numbers")
+        st.write(cand_df.head(top_n).reset_index(drop=True))
+
+        st.subheader("Model metrics per position")
+        st.json(models_info["metrics"])
+
 
     # ---------- HYBRID ----------
     elif model_choice == "Hybrid":
