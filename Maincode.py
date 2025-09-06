@@ -395,7 +395,8 @@ try:
 
         model_choice = st.selectbox(
             "Choose Prediction Method",
-            ["Frequency Analysis", "Digit Distribution", "Markov Chains", "Last Digit Markov", "Machine Learning", "Hybrid"]
+            ["Frequency Analysis", "Digit Distribution", "Markov Chains", "Last Digit Markov"]
+            # comment out machine learning and hybrid for cloud as it crashes the app["Frequency Analysis", "Digit Distribution", "Markov Chains", "Last Digit Markov", "Machine Learning", "Hybrid"]
         )
 
         # Collect numbers from selected prize types only
